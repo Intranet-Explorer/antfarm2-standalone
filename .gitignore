@@ -1,0 +1,6 @@
+harness.log
+state.db
+state.db-*
+STOP
+__pycache__/
+*.pyc
