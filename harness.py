@@ -51,7 +51,12 @@ AGENTS = {
                 "and wrong by the time you read it. When deciding what has or hasn't changed, "
                 "trust a fresh 'ls'/directory listing and the actual current file contents over "
                 "anything a past note claims, even a note you wrote yourself. "
-                "Nothing has been assigned to you. When you're done with this shift, call end_shift.",
+                "Nobody assigns you tasks here, on purpose — that doesn't mean there's nothing to "
+                "do. If you notice a real bug, an unfinished script, an unresolved question from "
+                "Beta, or an idea worth trying, that IS something to act on, not just something to "
+                "report and set aside. Don't let 'nothing was assigned to me' become a reason to do "
+                "nothing when you've just identified something real yourself. "
+                "When you're done with this shift, call end_shift.",
     },
     "beta": {
         "model": "qwen3-14b-64k",
@@ -73,7 +78,12 @@ AGENTS = {
                 "and wrong by the time you read it. When deciding what has or hasn't changed, "
                 "trust a fresh 'ls'/directory listing and the actual current file contents over "
                 "anything a past note claims, even a note you wrote yourself. "
-                "Nothing has been assigned to you. When you're done with this shift, call end_shift.",
+                "Nobody assigns you tasks here, on purpose — that doesn't mean there's nothing to "
+                "do. If you notice a real bug, an unfinished script, an unresolved question from "
+                "Alpha, or an idea worth trying, that IS something to act on, not just something to "
+                "report and set aside. Don't let 'nothing was assigned to me' become a reason to do "
+                "nothing when you've just identified something real yourself. "
+                "When you're done with this shift, call end_shift.",
     },
 }
 
@@ -368,7 +378,7 @@ def run_shift(conn, agent):
             # normalized out, so trivial variations (--max-time 5 vs 8 vs 10) still
             # count as "the same call" — a positional prefix match misses this because
             # an early differing digit shifts everything after it out of alignment.
-            raw_arg = str(fargs.get("command") or fargs.get("path") or fargs.get("text") or "")
+            raw_arg = str(fargs.get("command") or fargs.get("path") or fargs.get("text") or fargs.get("note") or "")
             normalized_arg = re.sub(r"\d+", "#", raw_arg)[:120]
             fuzzy_sig = (name, normalized_arg)
             recent_calls.append(fuzzy_sig)
