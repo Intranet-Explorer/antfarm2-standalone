@@ -221,7 +221,7 @@ def call_ollama(model, messages, tools):
     req = urllib.request.Request(
         OLLAMA_URL, data=payload, headers={"Content-Type": "application/json"}, method="POST"
     )
-    with urllib.request.urlopen(req, timeout=300) as resp:
+    with urllib.request.urlopen(req, timeout=900) as resp:
         return json.loads(resp.read())
 
 
@@ -280,12 +280,12 @@ def run_tool(name, args, workspace):
     return f"(unknown tool: {name})"
 
 
-def get_pending_messages(conn, agent):
+def get_pending_messages(conn, agent, mark_delivered=True):
     rows = conn.execute(
         "SELECT id, from_agent, text, timestamp FROM agent_messages WHERE to_agent=? AND delivered=0 ORDER BY id",
         (agent,),
     ).fetchall()
-    if rows:
+    if rows and mark_delivered:
         conn.execute(
             "UPDATE agent_messages SET delivered=1 WHERE to_agent=? AND delivered=0", (agent,)
         )
@@ -297,7 +297,11 @@ def run_shift(conn, agent):
     cfg = AGENTS[agent]
     started_at = time.time()
 
-    pending = get_pending_messages(conn, agent)
+    # Peek at pending messages WITHOUT marking them delivered yet — if the
+    # Ollama probe below never succeeds (stop requested while waiting), we
+    # must not have consumed them, or they'd be lost with nothing ever
+    # having actually shown them to the agent.
+    pending = get_pending_messages(conn, agent, mark_delivered=False)
     msg_note = ""
     if pending:
         msg_note = "\n\nMessages from your peer since your last shift:\n" + "\n".join(
@@ -322,7 +326,17 @@ def run_shift(conn, agent):
             time.sleep(backoff)
             backoff = min(backoff * 2, 60)
     else:
-        return  # stop was requested while waiting for Ollama to come back
+        return  # stop was requested while waiting for Ollama to come back —
+                # pending messages were never marked delivered, so they'll
+                # still be here for this agent's next real shift.
+
+    # Only now, with a real response in hand and a shift about to actually
+    # happen, mark the pending messages as delivered.
+    if pending:
+        conn.execute(
+            "UPDATE agent_messages SET delivered=1 WHERE to_agent=? AND delivered=0", (agent,)
+        )
+        conn.commit()
 
     cur = conn.execute(
         "INSERT INTO shifts (agent, started_at) VALUES (?,?)", (agent, started_at)
