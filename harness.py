@@ -296,13 +296,6 @@ def get_pending_messages(conn, agent):
 def run_shift(conn, agent):
     cfg = AGENTS[agent]
     started_at = time.time()
-    cur = conn.execute(
-        "INSERT INTO shifts (agent, started_at) VALUES (?,?)", (agent, started_at)
-    )
-    conn.commit()
-    shift_id = cur.lastrowid
-
-    print(f"\n=== {agent} shift {shift_id} starting ===")
 
     pending = get_pending_messages(conn, agent)
     msg_note = ""
@@ -315,6 +308,29 @@ def run_shift(conn, agent):
         {"role": "system", "content": cfg["soul"] + msg_note},
         {"role": "user", "content": "[harness] Your shift has started. Nobody is waiting on a reply."},
     ]
+
+    # Probe Ollama BEFORE creating a shift row, so a connection failure
+    # (server down/restarting) doesn't spam thousands of empty shift rows
+    # in a tight loop — it backs off and retries instead.
+    backoff = 2
+    while not stop_requested():
+        try:
+            resp = call_ollama(cfg["model"], messages, TOOLS)
+            break
+        except Exception as e:
+            print(f"[{agent}] ollama unreachable ({e}), retrying in {backoff}s...")
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+    else:
+        return  # stop was requested while waiting for Ollama to come back
+
+    cur = conn.execute(
+        "INSERT INTO shifts (agent, started_at) VALUES (?,?)", (agent, started_at)
+    )
+    conn.commit()
+    shift_id = cur.lastrowid
+
+    print(f"\n=== {agent} shift {shift_id} starting ===")
     log_event(conn, agent, shift_id, "system", cfg["soul"] + msg_note)
 
     note = ""
@@ -327,12 +343,15 @@ def run_shift(conn, agent):
             note = "(stopped by harness shutdown request, mid-shift)"
             print(f"[{agent}] stop requested mid-shift, wrapping up now")
             break
-        try:
-            resp = call_ollama(cfg["model"], messages, TOOLS)
-        except Exception as e:
-            print(f"[error] ollama call failed: {e}")
-            log_event(conn, agent, shift_id, "error", str(e))
-            break
+        if i > 0:
+            try:
+                resp = call_ollama(cfg["model"], messages, TOOLS)
+            except Exception as e:
+                print(f"[error] ollama call failed: {e}")
+                log_event(conn, agent, shift_id, "error", str(e))
+                break
+        # i == 0 reuses the successful probe response from above, so the
+        # first real call isn't wasted just to confirm Ollama is up.
 
         choice = resp.get("choices", [{}])[0]
         msg = choice.get("message", {})
@@ -470,6 +489,8 @@ def main():
             unload_model(other_model)  # free RAM: only the active agent's model stays loaded
             run_shift(conn, current)
             current = "beta" if current == "alpha" else "alpha"
+            time.sleep(0.5)  # hard floor: never allow back-to-back shifts with zero pacing,
+                              # regardless of how fast a future failure path might return
     finally:
         print("[harness] Shutting down: unloading models and closing DB...")
         for cfg in AGENTS.values():
