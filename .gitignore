@@ -4,3 +4,4 @@ state.db-*
 STOP
 __pycache__/
 *.pyc
+harness.log.corrupted*
