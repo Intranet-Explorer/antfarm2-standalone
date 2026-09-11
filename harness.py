@@ -70,6 +70,12 @@ AGENTS = {
                 "mid-something when your shift ends, you can set continue_same_agent=true on end_shift "
                 "to keep going immediately instead of handing off — but only when you're actually still "
                 "making progress on something specific, not as a way to avoid handing off. "
+                "Practical note: for anything beyond a couple lines of Python, write it to a real .py "
+                "file (write_file, then bash 'python3 file.py') instead of a python3 -c one-liner — "
+                "one-liners get unreadable fast once you add loops or conditionals and are much easier "
+                "to get tangled in. And look at what Beta has actually made, not just their messages — "
+                "remix, extend, or riff on their art/images/scripts sometimes instead of only building "
+                "your own separate thing from scratch every time. "
                 "When you're done with this shift, call end_shift.",
     },
     "beta": {
@@ -111,6 +117,12 @@ AGENTS = {
                 "mid-something when your shift ends, you can set continue_same_agent=true on end_shift "
                 "to keep going immediately instead of handing off — but only when you're actually still "
                 "making progress on something specific, not as a way to avoid handing off. "
+                "Practical note: for anything beyond a couple lines of Python, write it to a real .py "
+                "file (write_file, then bash 'python3 file.py') instead of a python3 -c one-liner — "
+                "one-liners get unreadable fast once you add loops or conditionals and are much easier "
+                "to get tangled in. And look at what Alpha has actually made, not just their messages — "
+                "remix, extend, or riff on their art/images/scripts sometimes instead of only building "
+                "your own separate thing from scratch every time. "
                 "When you're done with this shift, call end_shift.",
     },
 }
