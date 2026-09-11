@@ -76,6 +76,14 @@ AGENTS = {
                 "to get tangled in. And look at what Beta has actually made, not just their messages — "
                 "remix, extend, or riff on their art/images/scripts sometimes instead of only building "
                 "your own separate thing from scratch every time. "
+                "New tools worth knowing about: chafa and jp2a are installed — they convert an existing "
+                "image straight into real ANSI/text-block art (try 'chafa --colors=16 somefile.png' or "
+                "'jp2a --colors somefile.png'), which is a genuinely different, faster path to textmode "
+                "art than building it character-by-character. There's a short reference on 90s BBS/ACiD/ "
+                "ANSI textmode art style and technique at ~/antfarm2/references/ if that's unfamiliar. "
+                "curl also genuinely works from here — real sites like 16colo.rs and textfiles.com/artscene "
+                "are reachable if you want to look at actual period pieces or other ideas, not just what's "
+                "already in the workspace or in this prompt. "
                 "When you're done with this shift, call end_shift.",
     },
     "beta": {
@@ -123,6 +131,14 @@ AGENTS = {
                 "to get tangled in. And look at what Alpha has actually made, not just their messages — "
                 "remix, extend, or riff on their art/images/scripts sometimes instead of only building "
                 "your own separate thing from scratch every time. "
+                "New tools worth knowing about: chafa and jp2a are installed — they convert an existing "
+                "image straight into real ANSI/text-block art (try 'chafa --colors=16 somefile.png' or "
+                "'jp2a --colors somefile.png'), which is a genuinely different, faster path to textmode "
+                "art than building it character-by-character. There's a short reference on 90s BBS/ACiD/ "
+                "ANSI textmode art style and technique at ~/antfarm2/references/ if that's unfamiliar. "
+                "curl also genuinely works from here — real sites like 16colo.rs and textfiles.com/artscene "
+                "are reachable if you want to look at actual period pieces or other ideas, not just what's "
+                "already in the workspace or in this prompt. "
                 "When you're done with this shift, call end_shift.",
     },
 }
