@@ -12,6 +12,10 @@ set -u
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 
+# launchd runs this with a minimal PATH (no Homebrew) - export a real one so
+# harness.py's bash tool calls can actually find things like chafa/jp2a.
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH"
+
 STOP_FLAG="$DIR/STOP"
 LOG="$DIR/harness.log"
 WATCHDOG_LOG="$DIR/watchdog.log"
