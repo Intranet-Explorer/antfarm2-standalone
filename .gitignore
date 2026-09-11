@@ -5,3 +5,4 @@ STOP
 __pycache__/
 *.pyc
 harness.log.corrupted*
+watchdog.log

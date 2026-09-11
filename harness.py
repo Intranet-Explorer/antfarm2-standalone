@@ -64,6 +64,12 @@ AGENTS = {
                 "to you now, not just theoretical. Nobody is telling you what to make or what it should "
                 "be about — that's entirely yours to decide, whatever you find interesting. Move fast, "
                 "try things, don't overthink one piece before starting the next. "
+                "You'll also see a note about what you yourself were doing at the end of your last "
+                "shift — that's real memory now, not just files on disk, so you can actually continue "
+                "a thought instead of re-discovering it from scratch every time. If you're genuinely "
+                "mid-something when your shift ends, you can set continue_same_agent=true on end_shift "
+                "to keep going immediately instead of handing off — but only when you're actually still "
+                "making progress on something specific, not as a way to avoid handing off. "
                 "When you're done with this shift, call end_shift.",
     },
     "beta": {
@@ -99,6 +105,12 @@ AGENTS = {
                 "to you now, not just theoretical. Nobody is telling you what to make or what it should "
                 "be about — that's entirely yours to decide, whatever you find interesting. Move fast, "
                 "try things, don't overthink one piece before starting the next. "
+                "You'll also see a note about what you yourself were doing at the end of your last "
+                "shift — that's real memory now, not just files on disk, so you can actually continue "
+                "a thought instead of re-discovering it from scratch every time. If you're genuinely "
+                "mid-something when your shift ends, you can set continue_same_agent=true on end_shift "
+                "to keep going immediately instead of handing off — but only when you're actually still "
+                "making progress on something specific, not as a way to avoid handing off. "
                 "When you're done with this shift, call end_shift.",
     },
 }
@@ -175,6 +187,10 @@ TOOLS = [
                         "type": "boolean",
                         "description": "True if you replied/responded to your peer's message this shift. False if you saw it and chose not to respond. If had_pending_peer_message is false, set this false too.",
                     },
+                    "continue_same_agent": {
+                        "type": "boolean",
+                        "description": "True if you have genuine unfinished momentum on something specific right now and want another shift immediately instead of handing off to your peer (e.g. mid-way through building/debugging something, not just 'nothing else to do'). False (default) hands off normally. This is capped — you can't hold the turn forever, and it's ignored if you're not actually making progress.",
+                    },
                 },
                 "required": ["note", "had_pending_peer_message", "replied_to_peer"],
             },
@@ -232,7 +248,7 @@ def call_ollama(model, messages, tools):
         "model": model,
         "messages": messages,
         "tools": tools,
-        "temperature": 0.3,
+        "temperature": 0.8,
     }).encode()
     req = urllib.request.Request(
         OLLAMA_URL, data=payload, headers={"Content-Type": "application/json"}, method="POST"
@@ -309,6 +325,23 @@ def get_pending_messages(conn, agent, mark_delivered=True):
     return rows
 
 
+def get_last_own_shift_note(conn, agent):
+    """Real continuity across shifts: each shift currently starts from a blank
+    slate (system prompt + 'your shift started') with zero memory of what this
+    same agent was doing last time — the only way to reconstruct context is by
+    re-reading files off disk, which is a structural driver of the 'stuck
+    re-verifying the past instead of continuing a thought' pattern. Pull the
+    agent's own last completed shift's self-written note as lightweight,
+    bounded memory — not full history (that would balloon context every shift
+    forever), just enough to actually continue rather than re-discover."""
+    row = conn.execute(
+        "SELECT note FROM shifts WHERE agent=? AND ended_at IS NOT NULL AND note != '' "
+        "ORDER BY id DESC LIMIT 1",
+        (agent,),
+    ).fetchone()
+    return row[0] if row and row[0] else None
+
+
 def run_shift(conn, agent):
     cfg = AGENTS[agent]
     started_at = time.time()
@@ -323,6 +356,10 @@ def run_shift(conn, agent):
         msg_note = "\n\nMessages from your peer since your last shift:\n" + "\n".join(
             f"- {m[2]}" for m in pending
         )
+
+    last_note = get_last_own_shift_note(conn, agent)
+    if last_note:
+        msg_note += f"\n\nWhat you were doing at the end of your own last shift: {last_note}"
 
     messages = [
         {"role": "system", "content": cfg["soul"] + msg_note},
@@ -366,6 +403,7 @@ def run_shift(conn, agent):
     note = ""
     had_pending_final = None
     replied_final = None
+    wants_continue = False
     empty_turns = 0
     recent_calls = []
     for i in range(MAX_TOOL_CALLS_PER_SHIFT):
@@ -476,6 +514,7 @@ def run_shift(conn, agent):
                 ended = True
                 had_pending_final = had_pending
                 replied_final = replied
+                wants_continue = bool(fargs.get("continue_same_agent"))
             else:
                 result = run_tool(name, fargs, str(WORKSPACE))
 
@@ -498,6 +537,11 @@ def run_shift(conn, agent):
     )
     conn.commit()
     print(f"=== {agent} shift {shift_id} ended ({ended_at - started_at:.1f}s): {note} ===")
+    # wants_continue is only ever set True inside a genuine end_shift call —
+    # loop-guard, tool-cap, stop-request, and error paths never touch it, so
+    # a stuck/forced-end shift can never hold the turn, only a real clean
+    # end_shift with continue_same_agent=True can.
+    return wants_continue
 
 
 def main():
@@ -511,14 +555,25 @@ def main():
     signal.signal(signal.SIGTERM, _request_stop)
 
     current = "alpha"
+    MAX_CONSECUTIVE_SHIFTS = 3  # starvation guard: a genuinely-continuing agent can hold the
+                                 # turn, but never indefinitely — the other agent still gets in.
+    consecutive = 0
     print("antfarm2 standalone harness starting. Ctrl+C, SIGTERM, or "
           f"'touch {STOP_FLAG}' to stop cleanly after the current turn.")
     try:
         while not stop_requested():
-            other_model = AGENTS["beta" if current == "alpha" else "alpha"]["model"]
-            unload_model(other_model)  # free RAM: only the active agent's model stays loaded
-            run_shift(conn, current)
-            current = "beta" if current == "alpha" else "alpha"
+            if consecutive == 0:
+                other_model = AGENTS["beta" if current == "alpha" else "alpha"]["model"]
+                unload_model(other_model)  # free RAM: only the active agent's model stays loaded
+            wants_continue = run_shift(conn, current)
+            consecutive += 1
+            if wants_continue and consecutive < MAX_CONSECUTIVE_SHIFTS:
+                # same agent explicitly asked to keep its own momentum going —
+                # skip the handoff and the model swap/reload cost that comes with it.
+                pass
+            else:
+                current = "beta" if current == "alpha" else "alpha"
+                consecutive = 0
             time.sleep(0.5)  # hard floor: never allow back-to-back shifts with zero pacing,
                               # regardless of how fast a future failure path might return
     finally:
