@@ -37,7 +37,7 @@ start_harness() {
         return
     fi
     log "starting harness.py"
-    ( python3 harness.py 2>&1 | tee "$LOG" ) &
+    ( python3 harness.py 2>&1 | tee -a "$LOG" ) &
 }
 
 log "watchdog started (checking every ${CHECK_INTERVAL}s)"
