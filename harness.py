@@ -609,7 +609,15 @@ def main():
         for cfg in AGENTS.values():
             unload_model(cfg["model"])
         conn.close()
-        STOP_FLAG.unlink(missing_ok=True)
+        # Deliberately NOT unlinking STOP_FLAG here: the watchdog's own poll
+        # loop checks STOP_FLAG on its own schedule (up to CHECK_INTERVAL
+        # seconds after this exits) specifically to take its "exit without
+        # restart" path instead of "not running, restart". If harness.py
+        # deletes the flag first, that race can make the watchdog see an
+        # absent flag + a dead harness and restart it right after a
+        # deliberate stop. Whoever created the flag (dashboard/user) is the
+        # one who should clear it - control_start()/control_restart() in the
+        # dashboard already do this correctly before bringing things back up.
         print("[harness] Stopped cleanly.")
 
 

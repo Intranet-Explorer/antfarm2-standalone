@@ -26,25 +26,30 @@ log() {
 }
 
 is_harness_running() {
-    pgrep -f "harness\.py" > /dev/null 2>&1
+    pgrep -f "antfarm2-standalone/harness\.py" > /dev/null 2>&1
 }
 
 harness_pid_count() {
-    pgrep -f "harness\.py" | wc -l | tr -d ' '
+    pgrep -f "antfarm2-standalone/harness\.py" | wc -l | tr -d ' '
 }
 
 start_harness() {
     local count
     count=$(harness_pid_count)
     if [ "$count" -gt 0 ]; then
-        log "refusing to start: $count harness.py process(es) already running (pgrep: $(pgrep -f 'harness\.py' | tr '\n' ' '))"
+        log "refusing to start: $count harness.py process(es) already running (pgrep: $(pgrep -f 'antfarm2-standalone/harness\.py' | tr '\n' ' '))"
         return
     fi
     log "starting harness.py"
-    ( python3 harness.py 2>&1 | tee -a "$LOG" ) &
+    ( python3 "$DIR/harness.py" 2>&1 | tee -a "$LOG" ) &
 }
 
 log "watchdog started (checking every ${CHECK_INTERVAL}s)"
+
+if [ -f "$STOP_FLAG" ]; then
+    log "STOP flag present at startup - not starting harness.py, exiting"
+    exit 0
+fi
 
 if ! is_harness_running; then
     start_harness
