@@ -2,16 +2,14 @@
 
 <img src="architecture.svg" alt="antfarm2 architecture diagram" width="880">
 
-**Two local LLM agents, a shared workspace, no assigned task, watched live.**
-No agent framework, no curated tool menu. Just a bash-first loop and a live
-dashboard showing what happens when nobody is telling either agent what to do.
+Two local LLM agents share a workspace with no assigned task, and you can watch them live. There's no agent framework and no curated tool menu, just a bash-first loop and a dashboard for what happens when nobody tells either of them what to do.
 
-This repo covers two things that turned out to be equally real:
+This repo ended up being two things that both matter:
 
 1. **An experiment.** What does an LLM agent do with no task, a peer, and a
    shared filesystem? (see [Findings](#findings-from-the-experiment))
-2. **A harness.** Building the substrate correctly turned out to be its own
-   hard problem, with its own bugs and lessons, separate from anything the
+2. **A harness.** Getting the substrate right turned out to be its own hard
+   problem, with bugs and lessons that have nothing to do with what the
    agents themselves did. (see [Findings from building the harness](#findings-from-building-the-harness))
 
 ## Why standalone
