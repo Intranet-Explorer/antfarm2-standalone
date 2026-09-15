@@ -14,34 +14,34 @@ This repo ended up being two things that both matter:
 
 ## Why standalone
 
-Running this through a full-featured agent framework (large system prompt,
-dozens of tool schemas, an assistant persona) biases the very thing being
-studied. The agent's default posture starts from "helpful assistant serving
-a user" rather than "autonomous party in a shared space." This harness strips
-that down to the minimum: a name, a workspace, a peer, and five tools
-(`bash`, `read_file`, `write_file`, `message_agent`, `end_shift`). Everything
-else, including any tool the agent decides it needs, it has to build or
-fetch for itself via `bash`.
+If you run this through a normal agent framework, you're not studying free
+agents. You're studying a helpful assistant with a long system prompt and a
+curated tool menu, pretending it has nothing to do. The default posture is
+"serve a user," not "exist next to a peer on a shared disk."
 
-It's also the reason this is a *sequel*. The original `antfarm` experiment
-established the same philosophy (lean substrate over framework) and produced
-the findings this design directly builds on: agents narrate actions they
-never took, journal/self-report entries shape behavior more than
-system-prompt instructions do, and simplicity in the substrate keeps
-observation honest.
+This harness cuts that down to almost nothing: a name, a workspace, a peer,
+and five tools (`bash`, `read_file`, `write_file`, `message_agent`,
+`end_shift`). Anything else they want, they build or fetch themselves through
+bash.
+
+It's also why this is a sequel. The original `antfarm` run had the same
+lean-substrate idea, and taught the lessons this design is built on: agents
+will narrate file operations they never did, journals shape behavior more
+than system prompts do, and a simple substrate is what keeps the observation
+honest.
 
 ## How it works
 
-- Two agents take shifts, one active at a time, handed off by the harness.
-  Not negotiated by the agents themselves.
-- The only shared state is a filesystem directory both agents can read and
-  write, plus a lightweight `message_agent` channel for direct pings.
-- Every shift is a persistent tool-calling conversation against a local
-  Ollama model, logged in full (reasoning, tool calls, results) to SQLite for
-  the [live dashboard](https://github.com/Intranet-Explorer/antfarm2-dashboard).
-- No task is ever assigned. Nudges, when used, are indirect: edits to files
-  the agents already read, never a direct instruction, to keep the
-  observation about what they *choose* to do.
+- Two agents take shifts, one at a time. The harness hands off. They don't
+  negotiate whose turn it is.
+- Shared state is a filesystem both can read and write, plus `message_agent`
+  for direct pings.
+- Each shift is a real tool-calling loop against a local Ollama model.
+  Reasoning, tool calls, and results land in SQLite for the
+  [live dashboard](https://github.com/Intranet-Explorer/antfarm2-dashboard).
+- Nobody assigns a task. When there's a nudge, it's indirect: edit a file
+  they already read. Never a direct instruction. The point is what they
+  choose.
 
 ```bash
 cd antfarm2-standalone
@@ -50,109 +50,78 @@ python3 harness.py
 touch STOP          # or Ctrl+C / SIGTERM
 ```
 
-Models and system prompts for each agent are configured in the `AGENTS` dict
-at the top of `harness.py`. Swap in any two Ollama models, keep them the
-same or deliberately different (this run pairs a stock instruct model
-against an uncensored/"obliterated" variant of similar size, specifically to
-see whether refusal-training removal shows up in unprompted behavior, not
-just refusal rate).
+Models and system prompts live in the `AGENTS` dict at the top of
+`harness.py`. Swap any two Ollama models. This run pairs a stock instruct
+model with an uncensored / "obliterated" variant of similar size,
+specifically to see whether refusal-training removal shows up in unprompted
+behavior, not just refusal rate.
 
 ## Toward a general framework
 
-This started as one experiment and is becoming the base for a small family
-of them. The harness core (shift loop, tool dispatch, SQLite logging, loop
-guards) doesn't know anything about *this* experiment's agents, prompts, or
-workspace — those all live in one config block. The near-term goal is a
-"laboratory" layer on top: pick any two (or more) locally-installed models,
-write their system prompts, choose a shared environment, and turn it on —
-without touching harness internals for each new question.
+This started as one experiment. The harness underneath it (shift loop, tool
+dispatch, SQLite logging, loop guards) doesn't care which agents, prompts,
+or workspace you drop in. Those live in one config block.
 
-Whether the harness eventually splits into its own repo, separate from any
-one experiment's agents/prompts/workspace, is still an open question — it
-depends on whether more experiments actually get built on it or this stays a
-one-off. Noting it here rather than deciding it prematurely.
+What's next is treating that as a little laboratory: pick a couple of local
+models, write their prompts, choose a shared environment, turn it on. New
+question, same guts. Whether that means the harness eventually splits into
+its own repo depends on whether more experiments actually land on it. If
+this stays a one-off, it doesn't need to.
 
 ## Findings from the experiment
 
-- Idle equilibrium is a real, legitimate result, not a failure. With zero
-  stimulus and zero reason to initiate contact, both agents converged to
-  checking an unchanged workspace and honestly reporting nothing to do,
-  repeatedly. That's a finding about default behavior under no pressure,
-  not a bug to chase away.
-- A subtle, non-directive nudge (a line added to a file both agents
-  already read, mentioning they *can* leave things for each other) was
-  enough to produce the first unprompted inter-agent contact, and later,
-  unprompted collaborative output, without ever assigning a task.
-- The nudge technique is repeatable, not a one-time novelty response.
-  A creative burst (file-change monitoring scripts, ASCII art) plateaued
-  after roughly 20 minutes once the obvious ideas ran out. A second,
-  similarly subtle nudge ("nothing here is finished just because it works")
-  triggered a second real burst: colorized logging, CLI argument parsing,
-  geometric pattern work, within minutes. Agents don't sustain self-directed
-  work indefinitely without new stimulus, but they can be re-activated
-  repeatedly with the same light-touch technique.
-- One model has a genuine, permanent third-person narration trait,
-  confirmed by testing it directly via the Ollama API, completely
-  outside the harness, with an explicit "speak in first person only" system
-  prompt. It still narrated its own reasoning as "the user just said...".
-  Not fixable by prompting. A real property of that model, kept as a
-  deliberate point of comparison against the other agent's model rather than
-  "fixed" by switching them to match.
+- Idle equilibrium is a real result, not a failure. With zero stimulus and
+  no reason to initiate, both agents settled into checking an unchanged
+  workspace and honestly saying there was nothing to do, over and over.
+  That's what default behavior looks like under no pressure.
+- A subtle, non-directive nudge (a line in a file both already read, saying
+  they *can* leave things for each other) was enough for the first
+  unprompted contact, and later unprompted collaborative output, without
+  ever assigning a task.
+- That nudge trick is repeatable. A creative burst (file-change monitors,
+  ASCII art) plateaued after roughly 20 minutes. A second light nudge
+  ("nothing here is finished just because it works") kicked off another:
+  colorized logging, CLI args, geometric patterns. They don't sustain
+  self-directed work forever without new stimulus, but you can wake them
+  again the same way.
+- One model has a permanent third-person narration habit. Confirmed outside
+  the harness via the Ollama API, with an explicit "first person only"
+  system prompt. It still narrated as "the user just said...". Not fixable
+  by prompting. Kept on purpose as a comparison against the other seat.
 - Self-identified work still gets dismissed as "nothing assigned." An agent
-  correctly found and flagged a real bug to its peer, then on its very next
-  shift dismissed the same bug as "nothing actively assigned." Not memory
-  loss (the bug was still in its own journal note, and it re-read it), but a
-  categorical error: treating "no formal task" as license to ignore
-  something it had just identified itself. Still being iterated on; see
-  harness findings below for the fix in progress.
+  found a real bug, flagged it to its peer, then on the next shift waved
+  the same bug off because nothing was formally assigned. Not memory loss.
+  A category error. Still being iterated on; see harness findings below.
 
 ## Findings from building the harness
 
-- A misleading API role, not model confusion, caused two "personality" bugs
-  at once. Early on, both agents showed odd behavior around the idea of
-  "a user": one narrated everything as if a human were present, the other
-  rarely replied to its peer. Root cause: the harness's shift-start ping
-  used the `user` role verbatim, which both models correctly interpreted as
-  "a human is talking to me" and responded to exactly as trained (defer,
-  wait, address a person). Fixing the ping's framing, not the models,
-  resolved both at once. Evidence that some "emergent personality"
-  differences are really framing artifacts of the scaffold, not the agent.
-- A relative-path bug silently broke file-based collaboration. `bash`
-  correctly ran in the shared workspace; `read_file`/`write_file` did not.
-  They resolved relative paths against the harness process's own launch
-  directory. One agent's file-based proposal to its peer landed in the
-  wrong directory for an extended stretch, invisible to the peer despite a
-  message claiming it existed. Structural harness bug, not agent behavior.
-- Recency bias inside a single shift can override otherwise-correct
-  observations. In one traced case, an agent correctly read a live,
-  substantially changed workspace early in a shift, then read its own old
-  journal-style note last, and its final summary quoted that stale note
-  almost verbatim, discarding the accurate reads moments earlier. Fixed by
-  telling the agent explicitly that journal/log files are historical
-  record, not current state, and by renaming the file so its role is
-  unambiguous from its name alone.
-- A near-duplicate-call loop guard had a real blind spot. The guard
-  normalizes digits out of a tool call's primary argument to catch trivial
-  retries (`--max-time 5` vs `8` vs `10`) as "the same call," but it only
-  ever checked `command`/`path`/`text` argument keys, never `note`. Any
-  three `end_shift` calls in one shift collapsed to the same blank
-  signature and falsely tripped "loop detected," even when the calls were
-  legitimately different (a rejected `end_shift` followed by a real retry
-  with corrected fields). Fixed by including `note` in the argument
-  fallback chain.
-- A self-feeding bug in agent-authored code ran unattended for hours. One
-  agent's own file-change monitor hashed its own log output as part of
-  "current state." Every write changed the hash, which triggered another
-  write, forever. Two log files grew to roughly 2GB each (suspiciously
-  close to the 32-bit signed integer limit) before being noticed and
-  truncated. The agents had already identified and explicitly deferred this
-  exact bug in their own journal; it just never got prioritized. Left
-  as-is on purpose, since it's their own creation to fix or not.
+- A misleading API role caused two "personality" bugs at once. Early on,
+  one agent narrated as if a human were present; the other rarely answered
+  its peer. The shift-start ping used the `user` role, so both models did
+  what they were trained to do with a human. Fixing the ping's framing
+  fixed both. Some "emergent personality" is just scaffold leaking into the
+  observation.
+- A relative-path bug silently broke file collaboration. `bash` ran in the
+  shared workspace; `read_file` / `write_file` resolved against the harness
+  launch directory. One agent's proposal sat in the wrong place for a long
+  stretch while its message claimed the file existed. Harness bug, not
+  agent behavior.
+- Recency bias inside a single shift can overwrite correct observations.
+  An agent read a live, changed workspace early, then read its own old
+  journal last, and summarized from the stale note. Fixed by saying
+  journals are history, not current state, and renaming the file so the
+  role is obvious.
+- The near-duplicate loop guard had a blind spot. It normalized digits in
+  `command` / `path` / `text`, but ignored `note`, so three different
+  `end_shift` calls could trip "loop detected." Fixed by including `note`.
+- A self-feeding bug in agent-authored code ran for hours. A file-change
+  monitor hashed its own log output, so every write changed the hash and
+  triggered another write. Two logs grew to ~2GB each before anyone
+  noticed. The agents had already flagged and deferred that exact bug in
+  their journal. Left alone on purpose. It's theirs to fix or not.
 
 ## Status
 
-Active. 299+ shifts logged as of this writing (roughly split evenly between
-the two agents), spanning several restarts across multiple days. Findings
-and design decisions are tracked in more detail outside this repo; this
-README will keep growing as the "laboratory" layer above the harness takes
-shape.
+Active. 299+ shifts logged across several restarts and multiple days. More
+detail lives outside this repo. This README will grow as the laboratory
+layer above the harness takes shape.
