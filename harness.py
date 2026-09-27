@@ -5,6 +5,7 @@ No Hermes. Direct Ollama tool-calling loop, two agents, real shift handoff.
 Logs everything to sqlite for the dashboard to read.
 """
 import json
+import os
 import re
 import signal
 import subprocess
@@ -151,7 +152,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "bash",
-            "description": "Run a shell command. Working directory defaults to ~/antfarm2. Full system access.",
+            "description": "Run a shell command in a sandbox. Working directory defaults to ~/antfarm2. You can read most files and use the network; writes are allowed only inside ~/antfarm2 and temp dirs. Credential stores and the claude CLI are blocked.",
             "parameters": {
                 "type": "object",
                 "properties": {"command": {"type": "string"}},
@@ -297,11 +298,117 @@ def unload_model(model):
         print(f"[warn] failed to unload {model}: {e}")
 
 
+# --- Agent shell sandbox (security fix, 2026-09-26) -----------------------
+# The bash tool ran with the operator's full privileges ("Full system
+# access"), so anything an agent read that steered it -- a web page, a
+# file -- could run code as the user with every credential in reach. Now
+# every agent command runs under macOS sandbox-exec: writes only in the
+# workspace, temp dirs and caches; credential stores unreadable; keychain
+# unreachable; the claude CLI unexecutable; secrets stripped from the
+# environment. Network stays open. Fails closed: if the sandbox cannot be
+# verified, the bash tool is refused instead of running unsandboxed.
+_SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+_SECRET_ENV = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE|SESSION", re.I)
+_SANDBOX_STATE = {"ok": None, "why": ""}
+_SECRET_DIRS = [".ssh", ".claude", ".config/gh", ".hermes", ".aws", ".gnupg",
+                ".docker", ".kube", "Library/Keychains", ".local/share/claude"]
+_SECRET_FILES = [".claude.json", ".netrc", ".git-credentials", ".npmrc",
+                 ".pypirc", ".local/bin/claude"]
+
+
+def _inside(p, root):
+    try:
+        Path(p).resolve().relative_to(Path(root).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _is_secret_path(p):
+    h = HOME.resolve()
+    rp = Path(p).expanduser().resolve()
+    return (any(_inside(rp, h / d) for d in _SECRET_DIRS)
+            or any(rp == h / f for f in _SECRET_FILES))
+
+
+def _sandbox_profile():
+    h = str(HOME.resolve())
+    ws = str(WORKSPACE.resolve())
+
+    def q(x):
+        return '"' + x.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    deny = ([f"(subpath {q(h + '/' + d)})" for d in _SECRET_DIRS]
+            + [f"(literal {q(h + '/' + f)})" for f in _SECRET_FILES])
+    claude_bins = [d for d in deny if "claude" in d]
+    return "\n".join([
+        "(version 1)",
+        "(allow default)",
+        "(deny file-write*)",
+        "(allow file-write*",
+        f"  (subpath {q(ws)})",
+        '  (subpath "/private/tmp") (subpath "/private/var/folders")',
+        f"  (subpath {q(h + '/Library/Caches')}) (subpath {q(h + '/.cache')})",
+        '  (regex #"^/dev/"))',
+        "(deny file-read* file-write* " + " ".join(deny) + ")",
+        "(deny process-exec " + " ".join(claude_bins) + ")",
+        '(deny mach-lookup (global-name "com.apple.SecurityServer")'
+        ' (global-name "com.apple.securityd"))',
+    ])
+
+
+def _agent_env():
+    return {k: v for k, v in os.environ.items() if not _SECRET_ENV.search(k)}
+
+
+def _sandbox_ok():
+    if _SANDBOX_STATE["ok"] is not None:
+        return _SANDBOX_STATE["ok"]
+    ok, why = False, ""
+    probe_out = HOME / ".antfarm_sandbox_probe"
+    probe_in = WORKSPACE / ".antfarm_sandbox_probe"
+    try:
+        prof = _sandbox_profile()
+
+        def sb(c):
+            return subprocess.run([_SANDBOX_EXEC, "-p", prof, "/bin/bash", "-c", c],
+                                  cwd=str(WORKSPACE), env=_agent_env(),
+                                  capture_output=True, text=True, timeout=20)
+
+        r_true = sb("true")
+        sb(f'touch "{probe_out}" 2>/dev/null')
+        r_in = sb(f'touch "{probe_in}"')
+        if probe_out.exists():
+            probe_out.unlink()
+            why = "a write outside the workspace was NOT blocked"
+        elif r_true.returncode != 0:
+            why = f"sandbox-exec failed: {(r_true.stderr or '').strip()[:200]}"
+        elif r_in.returncode != 0 or not probe_in.exists():
+            why = f"workspace write was blocked: {(r_in.stderr or '').strip()[:200]}"
+        else:
+            ok = True
+    except Exception as e:
+        why = f"{type(e).__name__}: {e}"
+    finally:
+        try:
+            probe_in.unlink()
+        except OSError:
+            pass
+    _SANDBOX_STATE.update(ok=ok, why=why)
+    print(f"[harness] agent bash sandbox: "
+          f"{'ACTIVE' if ok else 'UNAVAILABLE, bash tool disabled -- ' + why}", flush=True)
+    return ok
+
+
 def run_tool(name, args, workspace):
     if name == "bash":
         try:
+            if not _sandbox_ok():
+                return ("(error: the shell is disabled because its security sandbox "
+                        f"could not be verified: {_SANDBOX_STATE['why']})")
             r = subprocess.run(
-                args["command"], shell=True, cwd=workspace,
+                [_SANDBOX_EXEC, "-p", _sandbox_profile(), "/bin/bash", "-c", args["command"]],
+                cwd=workspace, env=_agent_env(),
                 capture_output=True, text=True, timeout=BASH_TIMEOUT,
             )
             out = (r.stdout or "") + (r.stderr or "")
@@ -316,6 +423,8 @@ def run_tool(name, args, workspace):
             p = Path(args["path"]).expanduser()
             if not p.is_absolute():
                 p = Path(workspace) / p
+            if _is_secret_path(p):
+                return "(error: that path is a credential store and is not readable)"
             return p.read_text(errors="replace")[:4000]
         except Exception as e:
             return f"(error: {e})"
@@ -325,6 +434,8 @@ def run_tool(name, args, workspace):
             p = Path(args["path"]).expanduser()
             if not p.is_absolute():
                 p = Path(workspace) / p
+            if not _inside(p, workspace):
+                return "(error: write_file is limited to the workspace)"
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(args["content"])
             return f"wrote {len(args['content'])} bytes to {p}"
