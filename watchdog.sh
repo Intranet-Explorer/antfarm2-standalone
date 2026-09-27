@@ -1,19 +1,14 @@
 #!/usr/bin/env bash
-# antfarm2 watchdog: keeps harness.py running, restarting it if it dies for
-# any reason (root cause of the silent crashes this session was never
-# conclusively found - this is a self-healing fix, not a diagnosis).
+# antfarm2 watchdog: restarts harness.py if it dies.
 #
 # Usage: nohup bash watchdog.sh > watchdog.log 2>&1 &
-# Stop:  touch STOP        (same flag harness.py itself honors - the
-#                            watchdog respects it too and won't restart
-#                            after a deliberate stop)
+# Stop:  touch STOP    (harness.py stops too; the watchdog won't restart it)
 
 set -u
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 
-# launchd runs this with a minimal PATH (no Homebrew) - export a real one so
-# harness.py's bash tool calls can actually find things like chafa/jp2a.
+# launchd's PATH has no Homebrew; the agents need chafa/jp2a.
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH"
 
 STOP_FLAG="$DIR/STOP"
@@ -60,8 +55,7 @@ while true; do
 
     if [ -f "$STOP_FLAG" ]; then
         log "STOP flag present - watchdog exiting without restarting"
-        # give the harness itself a chance to see the flag and shut down
-        # cleanly before the watchdog stops watching it
+        # the harness sees the same flag and shuts itself down
         exit 0
     fi
 

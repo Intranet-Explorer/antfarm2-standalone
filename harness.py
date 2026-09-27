@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-antfarm2 standalone harness.
-No Hermes. Direct Ollama tool-calling loop, two agents, real shift handoff.
-Logs everything to sqlite for the dashboard to read.
+antfarm2 harness. Two agents take turns in a shared workspace through an
+Ollama tool-calling loop. Everything is logged to sqlite for the dashboard.
 """
 import json
 import os
@@ -144,7 +143,7 @@ AGENTS = {
     },
 }
 
-MAX_TOOL_CALLS_PER_SHIFT = 40  # safety cap so a shift can't run forever
+MAX_TOOL_CALLS_PER_SHIFT = 40  # a shift can't run forever
 BASH_TIMEOUT = 60
 
 TOOLS = [
@@ -298,15 +297,12 @@ def unload_model(model):
         print(f"[warn] failed to unload {model}: {e}")
 
 
-# --- Agent shell sandbox (security fix, 2026-09-26) -----------------------
-# The bash tool ran with the operator's full privileges ("Full system
-# access"), so anything an agent read that steered it -- a web page, a
-# file -- could run code as the user with every credential in reach. Now
-# every agent command runs under macOS sandbox-exec: writes only in the
-# workspace, temp dirs and caches; credential stores unreadable; keychain
-# unreachable; the claude CLI unexecutable; secrets stripped from the
-# environment. Network stays open. Fails closed: if the sandbox cannot be
-# verified, the bash tool is refused instead of running unsandboxed.
+# --- Agent shell sandbox ----------------------------------------------------
+# Agent commands run under macOS sandbox-exec. Anything an agent reads can
+# steer it, so the shell can't run as the operator: writes only in the
+# workspace, temp dirs and caches; credential stores, keychain and the claude
+# CLI blocked; secret env vars stripped. Network stays open. Fails closed:
+# if the sandbox can't be verified, the bash tool is refused.
 _SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 _SECRET_ENV = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE|SESSION", re.I)
 _SANDBOX_STATE = {"ok": None, "why": ""}
@@ -465,14 +461,10 @@ def get_pending_messages(conn, agent, mark_delivered=True):
 
 
 def get_last_own_shift_note(conn, agent):
-    """Real continuity across shifts: each shift currently starts from a blank
-    slate (system prompt + 'your shift started') with zero memory of what this
-    same agent was doing last time — the only way to reconstruct context is by
-    re-reading files off disk, which is a structural driver of the 'stuck
-    re-verifying the past instead of continuing a thought' pattern. Pull the
-    agent's own last completed shift's self-written note as lightweight,
-    bounded memory — not full history (that would balloon context every shift
-    forever), just enough to actually continue rather than re-discover."""
+    """Return the agent's note from its last completed shift.
+
+    Each shift starts from a blank prompt. One note is enough to continue a
+    thought without re-reading the workspace; full history would grow forever."""
     row = conn.execute(
         "SELECT note FROM shifts WHERE agent=? AND ended_at IS NOT NULL AND note != '' "
         "ORDER BY id DESC LIMIT 1",
@@ -485,10 +477,8 @@ def run_shift(conn, agent):
     cfg = AGENTS[agent]
     started_at = time.time()
 
-    # Peek at pending messages WITHOUT marking them delivered yet — if the
-    # Ollama probe below never succeeds (stop requested while waiting), we
-    # must not have consumed them, or they'd be lost with nothing ever
-    # having actually shown them to the agent.
+    # Don't mark messages delivered yet. If a stop arrives before Ollama
+    # answers, they must survive for the next shift.
     pending = get_pending_messages(conn, agent, mark_delivered=False)
     msg_note = ""
     if pending:
@@ -505,9 +495,8 @@ def run_shift(conn, agent):
         {"role": "user", "content": "[harness] Your shift has started. Nobody is waiting on a reply."},
     ]
 
-    # Probe Ollama BEFORE creating a shift row, so a connection failure
-    # (server down/restarting) doesn't spam thousands of empty shift rows
-    # in a tight loop — it backs off and retries instead.
+    # Reach Ollama before creating a shift row, so an outage backs off
+    # instead of spamming empty shifts.
     backoff = 2
     while not stop_requested():
         try:
@@ -518,12 +507,9 @@ def run_shift(conn, agent):
             time.sleep(backoff)
             backoff = min(backoff * 2, 60)
     else:
-        return  # stop was requested while waiting for Ollama to come back —
-                # pending messages were never marked delivered, so they'll
-                # still be here for this agent's next real shift.
+        return  # stopped while waiting; pending messages stay undelivered
 
-    # Only now, with a real response in hand and a shift about to actually
-    # happen, mark the pending messages as delivered.
+    # The shift is real now; mark messages delivered.
     if pending:
         conn.execute(
             "UPDATE agent_messages SET delivered=1 WHERE to_agent=? AND delivered=0", (agent,)
@@ -557,8 +543,7 @@ def run_shift(conn, agent):
                 print(f"[error] ollama call failed: {e}")
                 log_event(conn, agent, shift_id, "error", str(e))
                 break
-        # i == 0 reuses the successful probe response from above, so the
-        # first real call isn't wasted just to confirm Ollama is up.
+        # i == 0 reuses the probe response.
 
         choice = resp.get("choices", [{}])[0]
         msg = choice.get("message", {})
@@ -578,11 +563,9 @@ def run_shift(conn, agent):
 
         if not tool_calls:
             if content.strip():
-                # gave a real final answer with no tool call — that's a legitimate stop
+                # final answer with no tool call: legitimate stop
                 break
-            # reasoning-only, empty content, no tool call — the model trailed off without
-            # actually deciding anything. Don't treat this as the end of the shift; nudge
-            # it to keep going instead of cutting it off mid-thought.
+            # Reasoning only, no content, no tool call. Nudge instead of ending.
             empty_turns += 1
             if empty_turns >= 3:
                 note = "(gave up after 3 empty turns with no action)"
@@ -600,19 +583,15 @@ def run_shift(conn, agent):
                 fargs = {}
 
             call_sig = (name, json.dumps(fargs, sort_keys=True))
-            # Near-duplicate detection: same tool + same primary arg with digits
-            # normalized out, so trivial variations (--max-time 5 vs 8 vs 10) still
-            # count as "the same call" — a positional prefix match misses this because
-            # an early differing digit shifts everything after it out of alignment.
+            # Loop detection: same tool + primary arg with digits masked, so
+            # "--max-time 5" and "--max-time 8" count as the same call.
             raw_arg = str(fargs.get("command") or fargs.get("path") or fargs.get("text") or fargs.get("note") or "")
             normalized_arg = re.sub(r"\d+", "#", raw_arg)[:120]
             fuzzy_sig = (name, normalized_arg)
             recent_calls.append(fuzzy_sig)
             recent_calls = recent_calls[-6:]
             if recent_calls.count(fuzzy_sig) >= 3:
-                # same tool + near-identical call repeated 3+ times — the model is stuck
-                # retrying variations of the same thing, not genuinely re-deciding.
-                # Force the shift to end rather than let it spin.
+                # 3 near-identical calls in the last 6: stuck. End the shift.
                 note = f"(loop detected: '{name}' called near-identically 3x in a row, forced end)"
                 log_event(conn, agent, shift_id, "tool", f"[harness: loop detected, ending shift]",
                           tool_name=name, tool_call_id=tc.get("id"))
@@ -636,10 +615,7 @@ def run_shift(conn, agent):
                 had_pending = fargs.get("had_pending_peer_message")
                 replied = fargs.get("replied_to_peer")
                 if had_pending and not replied:
-                    # Force a real decision instead of a silent skip: reject the
-                    # end_shift call and make the model either reply or explicitly
-                    # justify not replying, rather than letting "acknowledge and
-                    # do nothing" pass silently.
+                    # Reject: the agent must reply or say why it isn't.
                     result = (
                         "end_shift rejected: you indicated a peer message was pending "
                         "but replied_to_peer=false. Either use message_agent to reply, "
@@ -676,10 +652,8 @@ def run_shift(conn, agent):
     )
     conn.commit()
     print(f"=== {agent} shift {shift_id} ended ({ended_at - started_at:.1f}s): {note} ===")
-    # wants_continue is only ever set True inside a genuine end_shift call —
-    # loop-guard, tool-cap, stop-request, and error paths never touch it, so
-    # a stuck/forced-end shift can never hold the turn, only a real clean
-    # end_shift with continue_same_agent=True can.
+    # Only a clean end_shift sets wants_continue. Forced or failed endings
+    # never hold the turn.
     return wants_continue
 
 
@@ -694,8 +668,7 @@ def main():
     signal.signal(signal.SIGTERM, _request_stop)
 
     current = "alpha"
-    MAX_CONSECUTIVE_SHIFTS = 3  # starvation guard: a genuinely-continuing agent can hold the
-                                 # turn, but never indefinitely — the other agent still gets in.
+    MAX_CONSECUTIVE_SHIFTS = 3  # an agent can keep the turn, but not indefinitely
     consecutive = 0
     print("antfarm2 standalone harness starting. Ctrl+C, SIGTERM, or "
           f"'touch {STOP_FLAG}' to stop cleanly after the current turn.")
@@ -703,32 +676,24 @@ def main():
         while not stop_requested():
             if consecutive == 0:
                 other_model = AGENTS["beta" if current == "alpha" else "alpha"]["model"]
-                unload_model(other_model)  # free RAM: only the active agent's model stays loaded
+                unload_model(other_model)  # only the active agent's model stays loaded
             wants_continue = run_shift(conn, current)
             consecutive += 1
             if wants_continue and consecutive < MAX_CONSECUTIVE_SHIFTS:
-                # same agent explicitly asked to keep its own momentum going —
-                # skip the handoff and the model swap/reload cost that comes with it.
+                # agent asked to continue; skip the handoff and model swap
                 pass
             else:
                 current = "beta" if current == "alpha" else "alpha"
                 consecutive = 0
-            time.sleep(0.5)  # hard floor: never allow back-to-back shifts with zero pacing,
-                              # regardless of how fast a future failure path might return
+            time.sleep(0.5)  # floor between shifts, even if one fails instantly
     finally:
         print("[harness] Shutting down: unloading models and closing DB...")
         for cfg in AGENTS.values():
             unload_model(cfg["model"])
         conn.close()
-        # Deliberately NOT unlinking STOP_FLAG here: the watchdog's own poll
-        # loop checks STOP_FLAG on its own schedule (up to CHECK_INTERVAL
-        # seconds after this exits) specifically to take its "exit without
-        # restart" path instead of "not running, restart". If harness.py
-        # deletes the flag first, that race can make the watchdog see an
-        # absent flag + a dead harness and restart it right after a
-        # deliberate stop. Whoever created the flag (dashboard/user) is the
-        # one who should clear it - control_start()/control_restart() in the
-        # dashboard already do this correctly before bringing things back up.
+        # Leave STOP_FLAG in place. The watchdog checks it on its own schedule;
+        # removing it here would look like a crash and trigger a restart.
+        # Whoever set the flag clears it (the dashboard does on start/restart).
         print("[harness] Stopped cleanly.")
 
 
