@@ -301,7 +301,8 @@ def unload_model(model):
 # Agent commands run under macOS sandbox-exec. Anything an agent reads can
 # steer it, so the shell can't run as the operator: writes only in the
 # workspace, temp dirs and caches; credential stores, keychain and the claude
-# CLI blocked; secret env vars stripped. Network stays open. Fails closed:
+# CLI blocked; secret env vars stripped. Internet stays open; loopback is
+# denied, so no local service (the dashboards, ollama) is reachable. Fails closed:
 # if the sandbox can't be verified, the bash tool is refused.
 _SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 _SECRET_ENV = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE|SESSION", re.I)
@@ -325,6 +326,9 @@ def _is_secret_path(p):
     rp = Path(p).expanduser().resolve()
     return (any(_inside(rp, h / d) for d in _SECRET_DIRS)
             or any(rp == h / f for f in _SECRET_FILES))
+
+# Sandbox "localhost" = loopback; blocks 127.0.0.1 and ::1 (test_agent_loopback.py).
+LOOPBACK_DENY = '(deny network-outbound (remote ip "localhost:*"))'
 
 
 def _sandbox_profile():
@@ -350,6 +354,7 @@ def _sandbox_profile():
         "(deny process-exec " + " ".join(claude_bins) + ")",
         '(deny mach-lookup (global-name "com.apple.SecurityServer")'
         ' (global-name "com.apple.securityd"))',
+        LOOPBACK_DENY,
     ])
 
 
